@@ -5,13 +5,15 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "minoapp",
+    "scheme": "mimoapp",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.mimoapp.chat"
     },
     "android": {
+      "package": "com.mimoapp.chat",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -38,11 +40,23 @@
             "backgroundColor": "#000000"
           }
         }
+      ],
+      [
+        "@react-native-google-signin/google-signin",
+        {
+          "iosUrlScheme": "com.googleusercontent.apps.174568700304-iq5tp0kpvnr1fv96mccoppskm0cqttei"
+        }
       ]
     ],
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "be8566f8-b73d-4977-bfae-0f94bdf89f12"
+      }
     }
   }
 }

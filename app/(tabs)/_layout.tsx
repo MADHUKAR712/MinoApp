@@ -1,35 +1,74 @@
+/**
+ * Tabs Layout - Bottom Tab Navigation
+ * Authenticated user main navigation
+ */
 import { Tabs } from 'expo-router';
-import React from 'react';
+import { Ionicons } from '@expo/vector-icons';
+import { useTheme } from '../../context/ThemeContext';
+import { Colors } from '../../constants/Colors';
 
-import { HapticTab } from '@/components/haptic-tab';
-import { IconSymbol } from '@/components/ui/icon-symbol';
-import { Colors } from '@/constants/theme';
-import { useColorScheme } from '@/hooks/use-color-scheme';
+type TabIconName = 'chatbubbles' | 'disc' | 'call' | 'settings';
 
-export default function TabLayout() {
-  const colorScheme = useColorScheme();
+export default function TabsLayout() {
+    const { isDark } = useTheme();
 
-  return (
-    <Tabs
-      screenOptions={{
-        tabBarActiveTintColor: Colors[colorScheme ?? 'light'].tint,
-        headerShown: false,
-        tabBarButton: HapticTab,
-      }}>
-      <Tabs.Screen
-        name="index"
-        options={{
-          title: 'Home',
-          tabBarIcon: ({ color }) => <IconSymbol size={28} name="house.fill" color={color} />,
-        }}
-      />
-      <Tabs.Screen
-        name="explore"
-        options={{
-          title: 'Explore',
-          tabBarIcon: ({ color }) => <IconSymbol size={28} name="paperplane.fill" color={color} />,
-        }}
-      />
-    </Tabs>
-  );
+    const getTabBarIcon = (name: TabIconName) => {
+        return ({ focused, color, size }: { focused: boolean; color: string; size: number }) => (
+            <Ionicons
+                name={focused ? name : `${name}-outline`}
+                size={size}
+                color={color}
+            />
+        );
+    };
+
+    return (
+        <Tabs
+            screenOptions={{
+                headerShown: false,
+                tabBarActiveTintColor: Colors.tabBar.active,
+                tabBarInactiveTintColor: Colors.tabBar.inactive,
+                tabBarStyle: {
+                    backgroundColor: isDark ? Colors.background.dark : Colors.background.light,
+                    borderTopColor: isDark ? Colors.border.dark : Colors.border.light,
+                    paddingBottom: 8,
+                    paddingTop: 8,
+                    height: 80,
+                },
+                tabBarLabelStyle: {
+                    fontSize: 12,
+                    fontWeight: '500',
+                },
+            }}
+        >
+            <Tabs.Screen
+                name="chats"
+                options={{
+                    title: 'Chats',
+                    tabBarIcon: getTabBarIcon('chatbubbles'),
+                }}
+            />
+            <Tabs.Screen
+                name="status"
+                options={{
+                    title: 'Status',
+                    tabBarIcon: getTabBarIcon('disc'),
+                }}
+            />
+            <Tabs.Screen
+                name="calls"
+                options={{
+                    title: 'Calls',
+                    tabBarIcon: getTabBarIcon('call'),
+                }}
+            />
+            <Tabs.Screen
+                name="settings"
+                options={{
+                    title: 'Settings',
+                    tabBarIcon: getTabBarIcon('settings'),
+                }}
+            />
+        </Tabs>
+    );
 }
