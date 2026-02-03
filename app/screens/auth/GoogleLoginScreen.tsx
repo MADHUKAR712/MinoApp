@@ -1,24 +1,23 @@
 /**
  * GoogleLoginScreen - Google & Apple Sign-In
  */
+import { router } from 'expo-router';
 import React, { useState } from 'react';
 import {
-    View,
-    Text,
-    StyleSheet,
-    TouchableOpacity,
-    StatusBar,
-    Alert,
     ActivityIndicator,
+    Alert,
     BackHandler,
-    Platform,
+    StatusBar,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View,
 } from 'react-native';
-import { router } from 'expo-router';
+import PandaLogo from '../../../components/PandaLogo';
 import { Colors } from '../../../constants/Colors';
 import { Fonts } from '../../../constants/Fonts';
 import { Sizes } from '../../../constants/Sizes';
 import { useAuth } from '../../../context/AuthContext';
-import PandaLogo from '../../../components/PandaLogo';
 
 export default function GoogleLoginScreen() {
     const { signInWithGoogle, isAuthenticated } = useAuth();
@@ -159,7 +158,7 @@ export default function GoogleLoginScreen() {
                 {/* Info */}
                 <View style={styles.infoContainer}>
                     <Text style={styles.infoText}>
-                        🔒 Secure authentication
+                        {"🔒 Secure authentication"}
                     </Text>
                 </View>
             </View>

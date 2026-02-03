@@ -1,6 +1,5 @@
 import React from 'react';
-import { View, StyleSheet, Image, Dimensions, TouchableOpacity, Text } from 'react-native';
-import { Colors } from '../../constants/Colors';
+import { Dimensions, Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Fonts } from '../../constants/Fonts';
 
 const { width, height } = Dimensions.get('window');

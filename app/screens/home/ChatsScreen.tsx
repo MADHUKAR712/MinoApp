@@ -1,7 +1,8 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
-import React, { useState } from 'react';
+import { useFocusEffect, useRouter } from 'expo-router';
+import React, { useCallback, useState } from 'react';
 import {
+    ActivityIndicator,
     FlatList,
     ScrollView,
     StatusBar,
@@ -9,34 +10,14 @@ import {
     Text,
     TextInput,
     TouchableOpacity,
-    View,
+    TouchableWithoutFeedback,
+    View
 } from 'react-native';
 import { Colors } from '../../../constants/Colors';
 import { Fonts } from '../../../constants/Fonts';
 import { Sizes } from '../../../constants/Sizes';
-
-interface Chat {
-    id: string;
-    name: string;
-    avatar?: string;
-    lastMessage: string;
-    time: string;
-    unreadCount?: number;
-    isGroup?: boolean;
-    isPinned?: boolean;
-    isMuted?: boolean;
-    type?: 'text' | 'photo' | 'video' | 'doc';
-}
-
-const mockChats: Chat[] = [
-    { id: '1', name: 'MCA SEM-3 BOYS B:2024', lastMessage: 'Sarthak: From 1 Feb 2026', time: '12:50 pm', isGroup: true, isPinned: true },
-    { id: '2', name: 'Takshil Prajapati', lastMessage: '✓✓ Haa..', time: '8:00 pm', isPinned: true },
-    { id: '3', name: 'QalamWebStudio', lastMessage: '✓✓ You: 📄 VyapStock.pptx', time: '6:25 pm', type: 'doc' },
-    { id: '4', name: 'Tirupati Sanidhya 🚩PARIVAR', lastMessage: 'Papa: 📷 Photo', time: '5:43 pm', isGroup: true },
-    { id: '5', name: '❤️lovely family 😊', lastMessage: 'Dada: https://www.threads.com/@mp...', time: '5:41 pm', isGroup: true, unreadCount: 2 },
-    { id: '6', name: 'STARTUP GROUP', lastMessage: 'Takshil: Ha thik hai done 👍', time: '5:24 pm', isGroup: true },
-    { id: '7', name: 'Madhukar (You)', lastMessage: 'Message yourself', time: '5:21 pm' },
-];
+import { Profile, supabase } from '../../../lib/supabase';
+import { chatStorage, StoredChat } from '../../../services/chatStorage';
 
 interface ChatsScreenProps {
     onChatPress?: (chatId: string) => void;
@@ -48,8 +29,142 @@ const FILTERS = ['All', 'Unread', 'Favourites', 'Groups'];
 export default function ChatsScreen({ onChatPress, onNewChat }: ChatsScreenProps) {
     const [searchQuery, setSearchQuery] = useState('');
     const [activeFilter, setActiveFilter] = useState('All');
+    const [chats, setChats] = useState<StoredChat[]>([]);
+    const [filteredChats, setFilteredChats] = useState<StoredChat[]>([]);
+
+    // Database user search
+    const [searchResults, setSearchResults] = useState<Profile[]>([]);
+    const [isSearching, setIsSearching] = useState(false);
+
+    // Current user for "You" detection
+    const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+
+    // FAB menu state
+    const [showFabMenu, setShowFabMenu] = useState(false);
 
     const router = useRouter();
+
+    // Load chats and get current user when screen comes into focus
+    useFocusEffect(
+         
+        useCallback(() => {
+            loadChats();
+            getCurrentUser();
+        }, [])
+    );
+
+    const getCurrentUser = async () => {
+        const { data: { user } } = await supabase.auth.getUser();
+        setCurrentUserId(user?.id || null);
+    };
+
+    const loadChats = async () => {
+        const loadedChats = await chatStorage.getChats();
+        setChats(loadedChats);
+        applyFilters(loadedChats, '', activeFilter);
+    };
+
+    const applyFilters = (chatList: StoredChat[], query: string, filter: string) => {
+        let result = chatList;
+
+        // Apply search query to local chats
+        if (query.trim()) {
+            const lowerQuery = query.toLowerCase();
+            result = result.filter(chat =>
+                chat.name.toLowerCase().includes(lowerQuery) ||
+                chat.lastMessage.toLowerCase().includes(lowerQuery)
+            );
+        }
+
+        // Apply filter chips
+        switch (filter) {
+            case 'Unread':
+                result = result.filter(chat => chat.unreadCount && chat.unreadCount > 0);
+                break;
+            case 'Groups':
+                result = result.filter(chat => chat.isGroup);
+                break;
+            case 'Favourites':
+                result = result.filter(chat => chat.isPinned);
+                break;
+            // 'All' shows everything
+        }
+
+        setFilteredChats(result);
+    };
+
+    // Search users from Supabase database
+    const searchUsersFromDatabase = async (query: string) => {
+        if (!query.trim() || query.length < 2) {
+            setSearchResults([]);
+            return;
+        }
+
+        setIsSearching(true);
+        try {
+            const { data, error } = await supabase
+                .from('profiles')
+                .select('*')
+                .or(`display_name.ilike.%${query}%,email.ilike.%${query}%`)
+                .limit(10);
+
+            if (error) {
+                console.error('[Search] Error searching users:', error);
+                setSearchResults([]);
+            } else {
+                setSearchResults(data || []);
+            }
+        } catch (err) {
+            console.error('[Search] Exception:', err);
+            setSearchResults([]);
+        } finally {
+            setIsSearching(false);
+        }
+    };
+
+    const handleSearchChange = (query: string) => {
+        setSearchQuery(query);
+        applyFilters(chats, query, activeFilter);
+
+        // Search database when query is 2+ characters
+        if (query.length >= 2) {
+            searchUsersFromDatabase(query);
+        } else {
+            setSearchResults([]);
+        }
+    };
+
+    const handleFilterChange = (filter: string) => {
+        setActiveFilter(filter);
+        applyFilters(chats, searchQuery, filter);
+    };
+
+    const handleSearchUser = () => {
+        setShowFabMenu(false);
+        // Focus on search bar - for now just scroll to top
+        // The search bar is already there for searching users
+    };
+
+    const handleCreateGroup = () => {
+        setShowFabMenu(false);
+        // Navigate to create group screen (placeholder for now)
+        router.push('/screens/chat/ChatScreen?isGroup=true');
+    };
+
+    const handleUserSelect = (user: Profile) => {
+        const isCurrentUser = currentUserId && user.id === currentUserId;
+        const displayName = user.display_name || user.email || 'User';
+        const nameWithYou = isCurrentUser ? `${displayName} (You)` : displayName;
+
+        // Navigate to chat with this user
+        router.push({
+            pathname: '/screens/chat/ChatScreen',
+            params: { id: user.id, name: nameWithYou }
+        });
+        // Clear search
+        setSearchQuery('');
+        setSearchResults([]);
+    };
 
     const renderHeader = () => (
         <View style={styles.header}>
@@ -71,11 +186,16 @@ export default function ChatsScreen({ onChatPress, onNewChat }: ChatsScreenProps
                 <Ionicons name="search-outline" size={20} color={Colors.text.secondary.dark} style={styles.searchIcon} />
                 <TextInput
                     style={styles.searchInput}
-                    placeholder="Ask Meta AI or Search"
+                    placeholder="Search chats..."
                     placeholderTextColor={Colors.text.secondary.dark}
                     value={searchQuery}
-                    onChangeText={setSearchQuery}
+                    onChangeText={handleSearchChange}
                 />
+                {searchQuery.length > 0 && (
+                    <TouchableOpacity onPress={() => handleSearchChange('')}>
+                        <Ionicons name="close-circle" size={20} color={Colors.text.secondary.dark} />
+                    </TouchableOpacity>
+                )}
             </View>
         </View>
     );
@@ -90,7 +210,7 @@ export default function ChatsScreen({ onChatPress, onNewChat }: ChatsScreenProps
                             styles.filterChip,
                             activeFilter === filter && styles.filterChipActive
                         ]}
-                        onPress={() => setActiveFilter(filter)}
+                        onPress={() => handleFilterChange(filter)}
                     >
                         <Text style={[
                             styles.filterText,
@@ -104,7 +224,15 @@ export default function ChatsScreen({ onChatPress, onNewChat }: ChatsScreenProps
         </View>
     );
 
-    const renderChatItem = ({ item }: { item: Chat }) => (
+    const renderEmptyState = () => (
+        <View style={styles.emptyContainer}>
+            <Ionicons name="chatbubbles-outline" size={64} color={Colors.text.secondary.dark} />
+            <Text style={styles.emptyTitle}>No chats yet</Text>
+            <Text style={styles.emptySubtitle}>Tap + to start a new conversation</Text>
+        </View>
+    );
+
+    const renderChatItem = ({ item }: { item: StoredChat }) => (
         <TouchableOpacity
             style={styles.chatItem}
             onPress={() => router.push({ pathname: '/screens/chat/ChatScreen', params: { id: item.id, name: item.name } })}
@@ -117,7 +245,7 @@ export default function ChatsScreen({ onChatPress, onNewChat }: ChatsScreenProps
                     </View>
                 ) : (
                     <View style={styles.avatar}>
-                        <Text style={styles.avatarText}>{item.name.charAt(0)}</Text>
+                        <Text style={styles.avatarText}>{item.name.charAt(0).toUpperCase()}</Text>
                     </View>
                 )}
             </View>
@@ -150,6 +278,61 @@ export default function ChatsScreen({ onChatPress, onNewChat }: ChatsScreenProps
         </TouchableOpacity>
     );
 
+    const renderUserSearchItem = (user: Profile) => {
+        const isCurrentUser = currentUserId && user.id === currentUserId;
+        const displayName = user.display_name || 'No name';
+        const nameWithYou = isCurrentUser ? `${displayName} (You)` : displayName;
+
+        return (
+            <TouchableOpacity
+                key={user.id}
+                style={styles.chatItem}
+                onPress={() => handleUserSelect(user)}
+                activeOpacity={0.7}
+            >
+                <View style={styles.avatarContainer}>
+                    <View style={styles.avatar}>
+                        <Text style={styles.avatarText}>
+                            {(user.display_name || user.email || 'U').charAt(0).toUpperCase()}
+                        </Text>
+                    </View>
+                </View>
+
+                <View style={styles.chatContent}>
+                    <Text style={styles.chatName} numberOfLines={1}>
+                        {nameWithYou}
+                    </Text>
+                    <Text style={styles.chatMessage} numberOfLines={1}>
+                        {isCurrentUser ? 'Message yourself' : (user.email || 'No email')}
+                    </Text>
+                </View>
+
+                <Ionicons name="chatbubble-outline" size={20} color={Colors.text.secondary.dark} />
+            </TouchableOpacity>
+        );
+    };
+
+    const renderSearchResults = () => {
+        if (!searchQuery.trim() || searchQuery.length < 2) return null;
+
+        return (
+            <View style={styles.searchResultsContainer}>
+                <Text style={styles.searchResultsTitle}>Users from Database</Text>
+
+                {isSearching ? (
+                    <View style={styles.searchingContainer}>
+                        <ActivityIndicator size="small" color={Colors.primary} />
+                        <Text style={styles.searchingText}>Searching...</Text>
+                    </View>
+                ) : searchResults.length > 0 ? (
+                    searchResults.map(user => renderUserSearchItem(user))
+                ) : (
+                    <Text style={styles.noResultsText}>No users found matching &quot;{searchQuery}&quot;</Text>
+                )}
+            </View>
+        );
+    };
+
     return (
         <View style={styles.container}>
             <StatusBar barStyle="light-content" backgroundColor={Colors.background.dark} />
@@ -157,23 +340,67 @@ export default function ChatsScreen({ onChatPress, onNewChat }: ChatsScreenProps
             {renderHeader()}
 
             <FlatList
-                data={mockChats}
+                data={filteredChats}
                 renderItem={renderChatItem}
                 keyExtractor={item => item.id}
                 style={styles.list}
-                contentContainerStyle={styles.listContent}
+                contentContainerStyle={[styles.listContent, filteredChats.length === 0 && !searchQuery && styles.listEmpty]}
                 ListHeaderComponent={
                     <>
                         {renderSearchBar()}
                         {renderFilters()}
+                        {renderSearchResults()}
                     </>
                 }
+                ListEmptyComponent={!searchQuery ? renderEmptyState : null}
                 showsVerticalScrollIndicator={false}
             />
 
             {/* FAB */}
-            <TouchableOpacity style={styles.fab} onPress={onNewChat} activeOpacity={0.8}>
-                <Ionicons name="add-sharp" size={24} color={Colors.text.primary.light} />
+            {/* FAB Menu - appears above FAB button */}
+            {showFabMenu && (
+                <>
+                    <TouchableWithoutFeedback onPress={() => setShowFabMenu(false)}>
+                        <View style={styles.fabMenuOverlay} />
+                    </TouchableWithoutFeedback>
+
+                    <View style={styles.fabMenuContainer}>
+                        <TouchableOpacity
+                            style={styles.fabMenuItem}
+                            onPress={handleSearchUser}
+                            activeOpacity={0.7}
+                        >
+                            <View style={styles.fabMenuIconBg}>
+                                <Ionicons name="search" size={22} color={Colors.text.primary.dark} />
+                            </View>
+                            <Text style={styles.fabMenuText}>Search User</Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                            style={styles.fabMenuItem}
+                            onPress={handleCreateGroup}
+                            activeOpacity={0.7}
+                        >
+                            <View style={styles.fabMenuIconBg}>
+                                <Ionicons name="people" size={22} color={Colors.text.primary.dark} />
+                            </View>
+                            <Text style={styles.fabMenuText}>Create Group</Text>
+                        </TouchableOpacity>
+                    </View>
+                </>
+            )}
+
+            {/* FAB */}
+            <TouchableOpacity
+                style={styles.fab}
+                onPress={() => setShowFabMenu(!showFabMenu)}
+                activeOpacity={0.8}
+            >
+                <Ionicons
+                    name={showFabMenu ? "close" : "add-sharp"}
+                    size={24}
+                    color={Colors.text.primary.light}
+                />
             </TouchableOpacity>
         </View>
     );
@@ -229,6 +456,9 @@ const styles = StyleSheet.create({
         flex: 1,
         fontSize: 16,
         color: Colors.text.primary.dark,
+        fontWeight: Fonts.weight.medium,
+        fontFamily: 'System',
+        height: 48,
     },
     filterContainer: {
         marginBottom: 8,
@@ -261,6 +491,56 @@ const styles = StyleSheet.create({
     },
     listContent: {
         paddingBottom: 100,
+    },
+    listEmpty: {
+        flexGrow: 1,
+    },
+    searchResultsContainer: {
+        paddingHorizontal: Sizes.spacing.md,
+        paddingVertical: 12,
+        borderBottomWidth: 1,
+        borderBottomColor: Colors.border.dark,
+    },
+    searchResultsTitle: {
+        fontSize: 12,
+        fontWeight: '600',
+        color: Colors.text.secondary.dark,
+        textTransform: 'uppercase',
+        marginBottom: 8,
+        letterSpacing: 0.5,
+    },
+    searchingContainer: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingVertical: 16,
+    },
+    searchingText: {
+        marginLeft: 10,
+        color: Colors.text.secondary.dark,
+        fontSize: 14,
+    },
+    noResultsText: {
+        color: Colors.text.secondary.dark,
+        fontSize: 14,
+        paddingVertical: 12,
+        textAlign: 'center',
+    },
+    emptyContainer: {
+        flex: 1,
+        justifyContent: 'center',
+        alignItems: 'center',
+        paddingVertical: 100,
+    },
+    emptyTitle: {
+        fontSize: 18,
+        fontWeight: '600',
+        color: Colors.text.primary.dark,
+        marginTop: 16,
+    },
+    emptySubtitle: {
+        fontSize: 14,
+        color: Colors.text.secondary.dark,
+        marginTop: 8,
     },
     chatItem: {
         flexDirection: 'row',
@@ -358,5 +638,47 @@ const styles = StyleSheet.create({
         shadowOffset: { width: 0, height: 2 },
         shadowOpacity: 0.25,
         shadowRadius: 3,
+    },
+    fabMenuOverlay: {
+        ...StyleSheet.absoluteFillObject,
+        backgroundColor: 'rgba(0, 0, 0, 0.4)',
+    },
+    fabMenuContainer: {
+        position: 'absolute',
+        bottom: 90, // Above the FAB button
+        right: 20,
+        backgroundColor: Colors.surface.elevated,
+        borderRadius: 16,
+        padding: 8,
+        minWidth: 180,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.3,
+        shadowRadius: 8,
+        elevation: 8,
+    },
+    fabMenuItem: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingVertical: 12,
+        paddingHorizontal: 16,
+        borderRadius: 12,
+    },
+    fabMenuIconBg: {
+        width: 40,
+        height: 40,
+        borderRadius: 20,
+        backgroundColor: Colors.background.darkmode,
+        justifyContent: 'center',
+        alignItems: 'center',
+        marginRight: 12,
+    },
+    fabMenuText: {
+        fontSize: 16,
+        fontWeight: '500',
+        color: Colors.text.primary.dark,
+    },
+    fabOpen: {
+        transform: [{ rotate: '45deg' }],
     },
 });

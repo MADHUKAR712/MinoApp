@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import { View, Animated, StyleSheet } from 'react-native';
+import { Animated, StyleSheet, View } from 'react-native';
 import { Colors } from '../../constants/Colors';
 
 export function TypingIndicator() {
@@ -31,7 +31,7 @@ export function TypingIndicator() {
             animate(dot2, 150),
             animate(dot3, 300),
         ]).start();
-    }, []);
+    }, [dot1, dot2, dot3]);
 
     const renderDot = (animation: Animated.Value) => (
         <Animated.View

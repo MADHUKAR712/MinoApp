@@ -2,10 +2,10 @@
  * Tabs Layout - Bottom Tab Navigation
  * Authenticated user main navigation
  */
-import { Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { useTheme } from '../../context/ThemeContext';
+import { Tabs } from 'expo-router';
 import { Colors } from '../../constants/Colors';
+import { useTheme } from '../../context/ThemeContext';
 
 type TabIconName = 'chatbubbles' | 'disc' | 'call' | 'settings';
 
@@ -13,13 +13,14 @@ export default function TabsLayout() {
     const { isDark } = useTheme();
 
     const getTabBarIcon = (name: TabIconName) => {
-        return ({ focused, color, size }: { focused: boolean; color: string; size: number }) => (
+        const TabIcon = ({ focused, color, size }: { focused: boolean; color: string; size: number }) => (
             <Ionicons
                 name={focused ? name : `${name}-outline`}
                 size={size}
                 color={color}
             />
         );
+        return TabIcon;
     };
 
     return (

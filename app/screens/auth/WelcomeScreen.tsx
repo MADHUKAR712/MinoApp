@@ -2,21 +2,21 @@
  * WelcomeScreen - Onboarding first screen
  * Shows app intro with navigation to login
  */
-import React, { useState, useRef } from 'react';
+import { router } from 'expo-router';
+import React, { useRef, useState } from 'react';
 import {
-    View,
-    Text,
-    StyleSheet,
-    TouchableOpacity,
-    StatusBar,
+    Animated,
     Dimensions,
     FlatList,
-    Animated,
+    StatusBar,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View,
 } from 'react-native';
-import { router } from 'expo-router';
+import PandaLogo from '../../../components/PandaLogo';
 import { Colors } from '../../../constants/Colors';
 import { Fonts } from '../../../constants/Fonts';
-import PandaLogo from '../../../components/PandaLogo';
 
 const { width } = Dimensions.get('window');
 
@@ -159,7 +159,7 @@ export default function WelcomeScreen() {
             {/* Terms */}
             <View style={styles.termsContainer}>
                 <Text style={styles.termsText}>
-                    By tapping "Get Started", you agree to our{' '}
+                    By tapping &quot;Get Started&quot;, you agree to our{' '}
                     <Text style={styles.termsLink}>Terms of{'\n'}Service</Text>
                 </Text>
             </View>
