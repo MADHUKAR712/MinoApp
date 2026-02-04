@@ -1,6 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
+import { RealtimeChannel } from '@supabase/supabase-js';
 import { useFocusEffect, useRouter } from 'expo-router';
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import {
     ActivityIndicator,
     FlatList,
@@ -17,7 +18,7 @@ import { Colors } from '../../../constants/Colors';
 import { Fonts } from '../../../constants/Fonts';
 import { Sizes } from '../../../constants/Sizes';
 import { Profile, supabase } from '../../../lib/supabase';
-import { chatStorage, StoredChat } from '../../../services/chatStorage';
+import { chatService, ChatWithDetails } from '../../../services/chatService';
 
 interface ChatsScreenProps {
     onChatPress?: (chatId: string) => void;
@@ -29,8 +30,11 @@ const FILTERS = ['All', 'Unread', 'Favourites', 'Groups'];
 export default function ChatsScreen({ onChatPress, onNewChat }: ChatsScreenProps) {
     const [searchQuery, setSearchQuery] = useState('');
     const [activeFilter, setActiveFilter] = useState('All');
-    const [chats, setChats] = useState<StoredChat[]>([]);
-    const [filteredChats, setFilteredChats] = useState<StoredChat[]>([]);
+
+    // Database chats
+    const [chats, setChats] = useState<ChatWithDetails[]>([]);
+    const [filteredChats, setFilteredChats] = useState<ChatWithDetails[]>([]);
+    const [isLoading, setIsLoading] = useState(true);
 
     // Database user search
     const [searchResults, setSearchResults] = useState<Profile[]>([]);
@@ -42,52 +46,91 @@ export default function ChatsScreen({ onChatPress, onNewChat }: ChatsScreenProps
     // FAB menu state
     const [showFabMenu, setShowFabMenu] = useState(false);
 
+    // Subscription ref for cleanup
+    const subscriptionRef = useRef<RealtimeChannel | null>(null);
+
     const router = useRouter();
 
-    // Load chats and get current user when screen comes into focus
+    // Load chats and subscribe when screen comes into focus
     useFocusEffect(
-         
         useCallback(() => {
-            loadChats();
-            getCurrentUser();
+            initializeScreen();
+
+            return () => {
+                // Cleanup subscription when leaving screen
+                if (subscriptionRef.current) {
+                    chatService.unsubscribe(subscriptionRef.current);
+                }
+            };
         }, [])
     );
 
-    const getCurrentUser = async () => {
-        const { data: { user } } = await supabase.auth.getUser();
-        setCurrentUserId(user?.id || null);
+    const initializeScreen = async () => {
+        try {
+            setIsLoading(true);
+
+            // Get current user
+            const userId = await chatService.getCurrentUserId();
+            setCurrentUserId(userId);
+
+            // Update online status
+            await chatService.updateOnlineStatus(true);
+
+            // Load chats from database
+            await loadChats();
+
+            // Subscribe to new messages for real-time updates
+            subscriptionRef.current = chatService.subscribeToAllMessages(handleNewMessage);
+
+            setIsLoading(false);
+        } catch (error) {
+            console.error('[ChatsScreen] Error initializing:', error);
+            setIsLoading(false);
+        }
     };
 
     const loadChats = async () => {
-        const loadedChats = await chatStorage.getChats();
-        setChats(loadedChats);
-        applyFilters(loadedChats, '', activeFilter);
+        try {
+            const chatList = await chatService.getChatList();
+            setChats(chatList);
+            applyFilters(chatList, searchQuery, activeFilter);
+        } catch (error) {
+            console.error('[ChatsScreen] Error loading chats:', error);
+        }
     };
 
-    const applyFilters = (chatList: StoredChat[], query: string, filter: string) => {
+    // Handle new message for real-time chat list updates
+    const handleNewMessage = useCallback(() => {
+        // Reload chats to update last message and unread count
+        loadChats();
+    }, []);
+
+    const applyFilters = (chatList: ChatWithDetails[], query: string, filter: string) => {
         let result = chatList;
 
-        // Apply search query to local chats
+        // Apply search query
         if (query.trim()) {
             const lowerQuery = query.toLowerCase();
-            result = result.filter(chat =>
-                chat.name.toLowerCase().includes(lowerQuery) ||
-                chat.lastMessage.toLowerCase().includes(lowerQuery)
-            );
+            result = result.filter(chat => {
+                const displayName = chat.name || chat.other_user?.display_name || '';
+                const lastMessage = chat.last_message?.content || '';
+                return displayName.toLowerCase().includes(lowerQuery) ||
+                    lastMessage.toLowerCase().includes(lowerQuery);
+            });
         }
 
         // Apply filter chips
         switch (filter) {
             case 'Unread':
-                result = result.filter(chat => chat.unreadCount && chat.unreadCount > 0);
+                result = result.filter(chat => chat.unread_count > 0);
                 break;
             case 'Groups':
-                result = result.filter(chat => chat.isGroup);
+                result = result.filter(chat => chat.is_group);
                 break;
             case 'Favourites':
-                result = result.filter(chat => chat.isPinned);
+                // TODO: Add favorites functionality
+                result = [];
                 break;
-            // 'All' shows everything
         }
 
         setFilteredChats(result);
@@ -141,13 +184,10 @@ export default function ChatsScreen({ onChatPress, onNewChat }: ChatsScreenProps
 
     const handleSearchUser = () => {
         setShowFabMenu(false);
-        // Focus on search bar - for now just scroll to top
-        // The search bar is already there for searching users
     };
 
     const handleCreateGroup = () => {
         setShowFabMenu(false);
-        // Navigate to create group screen (placeholder for now)
         router.push('/screens/chat/ChatScreen?isGroup=true');
     };
 
@@ -164,6 +204,33 @@ export default function ChatsScreen({ onChatPress, onNewChat }: ChatsScreenProps
         // Clear search
         setSearchQuery('');
         setSearchResults([]);
+    };
+
+    const handleChatPress = (chat: ChatWithDetails) => {
+        const displayName = chat.name || chat.other_user?.display_name || 'Chat';
+        const targetUserId = chat.other_user?.id || chat.id;
+
+        router.push({
+            pathname: '/screens/chat/ChatScreen',
+            params: { id: targetUserId, name: displayName }
+        });
+    };
+
+    const formatTime = (dateString: string | undefined) => {
+        if (!dateString) return '';
+        const date = new Date(dateString);
+        const now = new Date();
+        const diffDays = Math.floor((now.getTime() - date.getTime()) / (1000 * 60 * 60 * 24));
+
+        if (diffDays === 0) {
+            return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true });
+        } else if (diffDays === 1) {
+            return 'Yesterday';
+        } else if (diffDays < 7) {
+            return date.toLocaleDateString([], { weekday: 'short' });
+        } else {
+            return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+        }
     };
 
     const renderHeader = () => (
@@ -186,7 +253,7 @@ export default function ChatsScreen({ onChatPress, onNewChat }: ChatsScreenProps
                 <Ionicons name="search-outline" size={20} color={Colors.text.secondary.dark} style={styles.searchIcon} />
                 <TextInput
                     style={styles.searchInput}
-                    placeholder="Search chats..."
+                    placeholder="Search chats or users..."
                     placeholderTextColor={Colors.text.secondary.dark}
                     value={searchQuery}
                     onChangeText={handleSearchChange}
@@ -228,55 +295,63 @@ export default function ChatsScreen({ onChatPress, onNewChat }: ChatsScreenProps
         <View style={styles.emptyContainer}>
             <Ionicons name="chatbubbles-outline" size={64} color={Colors.text.secondary.dark} />
             <Text style={styles.emptyTitle}>No chats yet</Text>
-            <Text style={styles.emptySubtitle}>Tap + to start a new conversation</Text>
+            <Text style={styles.emptySubtitle}>Search for users to start a conversation</Text>
         </View>
     );
 
-    const renderChatItem = ({ item }: { item: StoredChat }) => (
-        <TouchableOpacity
-            style={styles.chatItem}
-            onPress={() => router.push({ pathname: '/screens/chat/ChatScreen', params: { id: item.id, name: item.name } })}
-            activeOpacity={0.7}
-        >
-            <View style={styles.avatarContainer}>
-                {item.isGroup ? (
-                    <View style={styles.avatarGroup}>
-                        <Ionicons name="people" size={28} color="#CCCCCC" />
-                    </View>
-                ) : (
-                    <View style={styles.avatar}>
-                        <Text style={styles.avatarText}>{item.name.charAt(0).toUpperCase()}</Text>
-                    </View>
-                )}
-            </View>
+    const renderChatItem = ({ item }: { item: ChatWithDetails }) => {
+        const displayName = item.name || item.other_user?.display_name || 'Chat';
+        const lastMessage = item.last_message?.content || 'Start a conversation';
+        const time = formatTime(item.last_message?.created_at || item.created_at);
+        const isUnread = item.unread_count > 0;
+        const isSentByMe = item.last_message?.sender_id === currentUserId;
 
-            <View style={styles.chatContent}>
-                <View style={styles.chatRow}>
-                    <Text style={styles.chatName} numberOfLines={1}>{item.name}</Text>
-                    <Text style={[styles.chatTime, item.unreadCount ? styles.chatTimeUnread : undefined]}>
-                        {item.time}
-                    </Text>
+        return (
+            <TouchableOpacity
+                style={styles.chatItem}
+                onPress={() => handleChatPress(item)}
+                activeOpacity={0.7}
+            >
+                <View style={styles.avatarContainer}>
+                    {item.is_group ? (
+                        <View style={styles.avatarGroup}>
+                            <Ionicons name="people" size={28} color="#CCCCCC" />
+                        </View>
+                    ) : (
+                        <View style={styles.avatar}>
+                            <Text style={styles.avatarText}>{displayName.charAt(0).toUpperCase()}</Text>
+                            {item.other_user?.is_online && <View style={styles.onlineIndicator} />}
+                        </View>
+                    )}
                 </View>
 
-                <View style={styles.chatRow}>
-                    <Text style={styles.chatMessage} numberOfLines={1}>
-                        {item.lastMessage}
-                    </Text>
+                <View style={styles.chatContent}>
+                    <View style={styles.chatRow}>
+                        <Text style={styles.chatName} numberOfLines={1}>{displayName}</Text>
+                        <Text style={[styles.chatTime, isUnread && styles.chatTimeUnread]}>
+                            {time}
+                        </Text>
+                    </View>
 
-                    <View style={styles.metaContainer}>
-                        {item.isPinned && (
-                            <Ionicons name="pin" size={16} color={Colors.text.secondary.dark} style={styles.pinIcon} />
-                        )}
-                        {item.unreadCount && item.unreadCount > 0 && (
-                            <View style={styles.unreadBadge}>
-                                <Text style={styles.unreadText}>{item.unreadCount}</Text>
-                            </View>
-                        )}
+                    <View style={styles.chatRow}>
+                        <Text style={styles.chatMessage} numberOfLines={1}>
+                            {isSentByMe && '✓ '}{lastMessage}
+                        </Text>
+
+                        <View style={styles.metaContainer}>
+                            {isUnread && (
+                                <View style={styles.unreadBadge}>
+                                    <Text style={styles.unreadText}>
+                                        {item.unread_count > 99 ? '99+' : item.unread_count}
+                                    </Text>
+                                </View>
+                            )}
+                        </View>
                     </View>
                 </View>
-            </View>
-        </TouchableOpacity>
-    );
+            </TouchableOpacity>
+        );
+    };
 
     const renderUserSearchItem = (user: Profile) => {
         const isCurrentUser = currentUserId && user.id === currentUserId;
@@ -295,6 +370,7 @@ export default function ChatsScreen({ onChatPress, onNewChat }: ChatsScreenProps
                         <Text style={styles.avatarText}>
                             {(user.display_name || user.email || 'U').charAt(0).toUpperCase()}
                         </Text>
+                        {user.is_online && <View style={styles.onlineIndicator} />}
                     </View>
                 </View>
 
@@ -303,7 +379,7 @@ export default function ChatsScreen({ onChatPress, onNewChat }: ChatsScreenProps
                         {nameWithYou}
                     </Text>
                     <Text style={styles.chatMessage} numberOfLines={1}>
-                        {isCurrentUser ? 'Message yourself' : (user.email || 'No email')}
+                        {isCurrentUser ? 'Message yourself' : (user.email || 'Tap to chat')}
                     </Text>
                 </View>
 
@@ -317,7 +393,7 @@ export default function ChatsScreen({ onChatPress, onNewChat }: ChatsScreenProps
 
         return (
             <View style={styles.searchResultsContainer}>
-                <Text style={styles.searchResultsTitle}>Users from Database</Text>
+                <Text style={styles.searchResultsTitle}>Users</Text>
 
                 {isSearching ? (
                     <View style={styles.searchingContainer}>
@@ -333,31 +409,43 @@ export default function ChatsScreen({ onChatPress, onNewChat }: ChatsScreenProps
         );
     };
 
+    const renderLoadingState = () => (
+        <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color={Colors.primary} />
+            <Text style={styles.loadingText}>Loading chats...</Text>
+        </View>
+    );
+
     return (
         <View style={styles.container}>
             <StatusBar barStyle="light-content" backgroundColor={Colors.background.dark} />
 
             {renderHeader()}
 
-            <FlatList
-                data={filteredChats}
-                renderItem={renderChatItem}
-                keyExtractor={item => item.id}
-                style={styles.list}
-                contentContainerStyle={[styles.listContent, filteredChats.length === 0 && !searchQuery && styles.listEmpty]}
-                ListHeaderComponent={
-                    <>
-                        {renderSearchBar()}
-                        {renderFilters()}
-                        {renderSearchResults()}
-                    </>
-                }
-                ListEmptyComponent={!searchQuery ? renderEmptyState : null}
-                showsVerticalScrollIndicator={false}
-            />
+            {isLoading ? (
+                renderLoadingState()
+            ) : (
+                <FlatList
+                    data={filteredChats}
+                    renderItem={renderChatItem}
+                    keyExtractor={item => item.id}
+                    style={styles.list}
+                    contentContainerStyle={[styles.listContent, filteredChats.length === 0 && !searchQuery && styles.listEmpty]}
+                    ListHeaderComponent={
+                        <>
+                            {renderSearchBar()}
+                            {renderFilters()}
+                            {renderSearchResults()}
+                        </>
+                    }
+                    ListEmptyComponent={!searchQuery ? renderEmptyState : null}
+                    showsVerticalScrollIndicator={false}
+                    onRefresh={loadChats}
+                    refreshing={false}
+                />
+            )}
 
-            {/* FAB */}
-            {/* FAB Menu - appears above FAB button */}
+            {/* FAB Menu */}
             {showFabMenu && (
                 <>
                     <TouchableWithoutFeedback onPress={() => setShowFabMenu(false)}>
@@ -416,7 +504,7 @@ const styles = StyleSheet.create({
         justifyContent: 'space-between',
         alignItems: 'center',
         paddingHorizontal: Sizes.spacing.lg,
-        paddingTop: 50, // More top padding for status bar
+        paddingTop: 50,
         paddingBottom: Sizes.spacing.sm,
     },
     headerTitle: {
@@ -435,6 +523,16 @@ const styles = StyleSheet.create({
         justifyContent: 'center',
         alignItems: 'center',
     },
+    loadingContainer: {
+        flex: 1,
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    loadingText: {
+        marginTop: 12,
+        color: Colors.text.secondary.dark,
+        fontSize: 14,
+    },
     searchContainer: {
         paddingHorizontal: Sizes.spacing.md,
         paddingBottom: Sizes.spacing.sm,
@@ -443,7 +541,7 @@ const styles = StyleSheet.create({
     searchPill: {
         flexDirection: 'row',
         alignItems: 'center',
-        backgroundColor: Colors.background.darkmode, // Lighter than background
+        backgroundColor: Colors.background.darkmode,
         borderRadius: 24,
         paddingHorizontal: 16,
         paddingVertical: 10,
@@ -550,6 +648,7 @@ const styles = StyleSheet.create({
     },
     avatarContainer: {
         marginRight: 14,
+        position: 'relative',
     },
     avatar: {
         width: 48,
@@ -571,6 +670,17 @@ const styles = StyleSheet.create({
         fontSize: 18,
         fontWeight: '600',
         color: Colors.text.primary.dark,
+    },
+    onlineIndicator: {
+        position: 'absolute',
+        bottom: 2,
+        right: 2,
+        width: 12,
+        height: 12,
+        borderRadius: 6,
+        backgroundColor: '#4CAF50',
+        borderWidth: 2,
+        borderColor: Colors.background.dark,
     },
     chatContent: {
         flex: 1,
@@ -606,20 +716,17 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         gap: 6,
     },
-    pinIcon: {
-        transform: [{ rotate: '45deg' }],
-    },
     unreadBadge: {
-        minWidth: 18,
-        height: 18,
-        borderRadius: 9,
-        backgroundColor: Colors.background.light,
+        minWidth: 20,
+        height: 20,
+        borderRadius: 10,
+        backgroundColor: Colors.primary || Colors.background.light,
         justifyContent: 'center',
         alignItems: 'center',
-        paddingHorizontal: 5,
+        paddingHorizontal: 6,
     },
     unreadText: {
-        fontSize: 10,
+        fontSize: 11,
         fontWeight: 'bold',
         color: Colors.text.primary.light,
     },
@@ -645,7 +752,7 @@ const styles = StyleSheet.create({
     },
     fabMenuContainer: {
         position: 'absolute',
-        bottom: 90, // Above the FAB button
+        bottom: 90,
         right: 20,
         backgroundColor: Colors.surface.elevated,
         borderRadius: 16,
@@ -677,8 +784,5 @@ const styles = StyleSheet.create({
         fontSize: 16,
         fontWeight: '500',
         color: Colors.text.primary.dark,
-    },
-    fabOpen: {
-        transform: [{ rotate: '45deg' }],
     },
 });

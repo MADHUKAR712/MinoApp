@@ -1,10 +1,13 @@
 import { Ionicons } from '@expo/vector-icons';
+import { RealtimeChannel } from '@supabase/supabase-js';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
+    ActivityIndicator,
     FlatList,
     KeyboardAvoidingView,
     Platform,
+    Pressable,
     StatusBar,
     StyleSheet,
     Text,
@@ -16,55 +19,211 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors } from '../../../constants/Colors';
 import { Fonts } from '../../../constants/Fonts';
 import { Sizes } from '../../../constants/Sizes';
-import { chatStorage } from '../../../services/chatStorage';
+import { Message, Profile } from '../../../lib/supabase';
+import { chatService, MessageWithSender } from '../../../services/chatService';
 
-interface Message {
+interface DisplayMessage {
     id: string;
     content: string;
     time: string;
     isSent: boolean;
-    status?: 'sent' | 'delivered' | 'read';
+    status: 'sending' | 'sent' | 'delivered' | 'read';
+    senderId: string;
 }
 
 export default function ChatScreen() {
     const router = useRouter();
     const { id, name } = useLocalSearchParams();
-    const chatId = typeof id === 'string' ? id : `chat_${Date.now()}`;
-    const contactName = typeof name === 'string' ? name : 'New Chat';
+    const otherUserId = typeof id === 'string' ? id : '';
+    const contactName = typeof name === 'string' ? name : 'Chat';
     const insets = useSafeAreaInsets();
     const flatListRef = useRef<FlatList>(null);
 
+    // State
     const [message, setMessage] = useState('');
-    const [messages, setMessages] = useState<Message[]>([]);
+    const [messages, setMessages] = useState<DisplayMessage[]>([]);
+    const [isLoading, setIsLoading] = useState(true);
+    const [isSending, setIsSending] = useState(false);
+    const [chatId, setChatId] = useState<string | null>(null);
+    const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+    const [otherUserProfile, setOtherUserProfile] = useState<Profile | null>(null);
+
+    // Refs for cleanup
+    const subscriptionRef = useRef<RealtimeChannel | null>(null);
+
+    // Initialize chat on mount
+    useEffect(() => {
+        initializeChat();
+
+        return () => {
+            // Cleanup subscription on unmount
+            if (subscriptionRef.current) {
+                chatService.unsubscribe(subscriptionRef.current);
+            }
+        };
+    }, [otherUserId]);
+
+    const initializeChat = async () => {
+        try {
+            setIsLoading(true);
+
+            // Get current user ID
+            const userId = await chatService.getCurrentUserId();
+            setCurrentUserId(userId);
+
+            if (!userId || !otherUserId) {
+                console.error('[ChatScreen] Missing user IDs');
+                setIsLoading(false);
+                return;
+            }
+
+            // Get other user's profile for display
+            const profile = await chatService.getUserProfile(otherUserId);
+            setOtherUserProfile(profile);
+
+            // Get or create chat
+            const { chatId: existingChatId } = await chatService.getOrCreatePrivateChat(otherUserId);
+            setChatId(existingChatId);
+
+            // Load existing messages
+            const existingMessages = await chatService.getMessages(existingChatId);
+            const displayMessages = existingMessages.map(msg => transformMessage(msg, userId));
+            setMessages(displayMessages);
+
+            // Mark messages as read
+            await chatService.markMessagesAsRead(existingChatId);
+
+            // Subscribe to new messages
+            subscriptionRef.current = chatService.subscribeToMessages(
+                existingChatId,
+                (newMessage) => handleNewMessage(newMessage, userId)
+            );
+
+            setIsLoading(false);
+        } catch (error) {
+            console.error('[ChatScreen] Error initializing chat:', error);
+            setIsLoading(false);
+        }
+    };
+
+    // Transform database message to display format
+    const transformMessage = (msg: MessageWithSender | Message, userId: string): DisplayMessage => {
+        const createdAt = new Date(msg.created_at);
+        return {
+            id: msg.id,
+            content: msg.content,
+            time: createdAt.toLocaleTimeString([], {
+                hour: 'numeric',
+                minute: '2-digit',
+                hour12: true,
+            }),
+            isSent: msg.sender_id === userId,
+            status: msg.is_read ? 'read' : 'sent',
+            senderId: msg.sender_id || '',
+        };
+    };
+
+    // Handle incoming real-time message
+    const handleNewMessage = useCallback((newMessage: Message, userId: string) => {
+        setMessages(prev => {
+            // Check if message already exists (optimistic update)
+            if (prev.some(m => m.id === newMessage.id)) {
+                return prev;
+            }
+            return [...prev, transformMessage(newMessage, userId)];
+        });
+
+        // Mark as read if it's from the other user
+        if (newMessage.sender_id !== userId && chatId) {
+            chatService.markMessagesAsRead(chatId);
+        }
+
+        // Scroll to bottom
+        setTimeout(() => {
+            flatListRef.current?.scrollToEnd({ animated: true });
+        }, 100);
+    }, [chatId]);
 
     const handleSend = async () => {
-        if (!message.trim()) return;
+        console.log('[ChatScreen] handleSend called', { message: message.trim(), chatId, isSending });
 
-        const newMessage: Message = {
-            id: Date.now().toString(),
-            content: message.trim(),
+        if (!message.trim() || isSending) {
+            console.log('[ChatScreen] Early return - empty message or already sending');
+            return;
+        }
+
+        // If no chatId yet, we need to create the chat first
+        let activeChatId = chatId;
+        if (!activeChatId && otherUserId && currentUserId) {
+            console.log('[ChatScreen] No chatId, creating chat...');
+            try {
+                const { chatId: newChatId } = await chatService.getOrCreatePrivateChat(otherUserId);
+                activeChatId = newChatId;
+                setChatId(newChatId);
+                console.log('[ChatScreen] Chat created:', newChatId);
+            } catch (error) {
+                console.error('[ChatScreen] Error creating chat:', error);
+                return;
+            }
+        }
+
+        if (!activeChatId) {
+            console.error('[ChatScreen] No chat ID available');
+            return;
+        }
+
+        const messageContent = message.trim();
+        const tempId = `temp_${Date.now()}`;
+
+        // Optimistic update
+        const optimisticMessage: DisplayMessage = {
+            id: tempId,
+            content: messageContent,
             time: new Date().toLocaleTimeString([], {
                 hour: 'numeric',
                 minute: '2-digit',
                 hour12: true,
             }),
             isSent: true,
-            status: 'sent',
+            status: 'sending',
+            senderId: currentUserId || '',
         };
 
-        setMessages(prev => [...prev, newMessage]);
+        setMessages(prev => [...prev, optimisticMessage]);
         setMessage('');
+        setIsSending(true);
 
-        // Save chat to storage so it appears in ChatsScreen
-        await chatStorage.saveChat({
-            id: chatId,
-            name: contactName,
-            lastMessage: newMessage.content,
-            time: newMessage.time,
-        });
+        try {
+            console.log('[ChatScreen] Sending message to chat:', activeChatId);
+            const sentMessage = await chatService.sendMessage(activeChatId, messageContent);
+
+            // Replace optimistic message with real one
+            setMessages(prev =>
+                prev.map(msg =>
+                    msg.id === tempId
+                        ? { ...transformMessage(sentMessage, currentUserId || ''), status: 'sent' as const }
+                        : msg
+                )
+            );
+        } catch (error) {
+            console.error('[ChatScreen] Error sending message:', error);
+            // Mark as failed
+            setMessages(prev =>
+                prev.map(msg =>
+                    msg.id === tempId ? { ...msg, status: 'sending' as const } : msg
+                )
+            );
+        } finally {
+            setIsSending(false);
+        }
+
+        // Scroll to bottom
+        setTimeout(() => {
+            flatListRef.current?.scrollToEnd({ animated: true });
+        }, 100);
     };
 
-    const renderMessage = ({ item }: { item: Message }) => {
+    const renderMessage = ({ item }: { item: DisplayMessage }) => {
         const isSent = item.isSent;
 
         return (
@@ -76,9 +235,19 @@ export default function ChatScreen() {
                         <Text style={styles.messageTime}>{item.time}</Text>
                         {isSent && (
                             <Ionicons
-                                name="checkmark-done-outline"
+                                name={
+                                    item.status === 'sending'
+                                        ? 'time-outline'
+                                        : item.status === 'read'
+                                            ? 'checkmark-done'
+                                            : 'checkmark-done-outline'
+                                }
                                 size={14}
-                                color={item.status === 'read' ? Colors.primary : Colors.text.secondary.dark}
+                                color={
+                                    item.status === 'read'
+                                        ? Colors.primary
+                                        : Colors.text.secondary.dark
+                                }
                             />
                         )}
                     </View>
@@ -87,23 +256,51 @@ export default function ChatScreen() {
         );
     };
 
+    const getDisplayName = () => {
+        if (otherUserProfile?.display_name) {
+            return otherUserProfile.display_name;
+        }
+        return contactName.replace(' (You)', '');
+    };
+
+    const getOnlineStatus = () => {
+        if (otherUserProfile?.is_online) {
+            return 'Online';
+        }
+        if (otherUserProfile?.last_seen) {
+            const lastSeen = new Date(otherUserProfile.last_seen);
+            return `Last seen ${lastSeen.toLocaleDateString()}`;
+        }
+        return 'Offline';
+    };
+
+    if (isLoading) {
+        return (
+            <View style={[styles.container, styles.loadingContainer]}>
+                <StatusBar barStyle="light-content" backgroundColor={Colors.surface.dark} />
+                <ActivityIndicator size="large" color={Colors.primary} />
+                <Text style={styles.loadingText}>Loading chat...</Text>
+            </View>
+        );
+    }
+
     return (
         <View style={styles.container}>
             <StatusBar barStyle="light-content" backgroundColor={Colors.surface.dark} />
 
-            {/* HEADER (NO KeyboardAvoidingView) */}
+            {/* HEADER */}
             <View style={[styles.header, { paddingTop: insets.top + 8 }]}>
                 <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
                     <Ionicons name="chevron-back" size={28} color={Colors.text.primary.dark} />
                 </TouchableOpacity>
 
                 <View style={styles.avatar}>
-                    <Text style={styles.avatarText}>{contactName.charAt(0)}</Text>
+                    <Text style={styles.avatarText}>{getDisplayName().charAt(0).toUpperCase()}</Text>
                 </View>
 
                 <View style={styles.headerInfo}>
-                    <Text style={styles.headerName} numberOfLines={1}>{contactName}</Text>
-                    <Text style={styles.headerStatus}>Online</Text>
+                    <Text style={styles.headerName} numberOfLines={1}>{getDisplayName()}</Text>
+                    <Text style={styles.headerStatus}>{getOnlineStatus()}</Text>
                 </View>
 
                 <View style={styles.headerActions}>
@@ -113,7 +310,7 @@ export default function ChatScreen() {
                 </View>
             </View>
 
-            {/* MESSAGES (NO KeyboardAvoidingView) */}
+            {/* MESSAGES */}
             <FlatList
                 ref={flatListRef}
                 data={messages}
@@ -121,10 +318,17 @@ export default function ChatScreen() {
                 keyExtractor={item => item.id}
                 showsVerticalScrollIndicator={false}
                 contentContainerStyle={styles.messagesList}
-                onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
+                onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: false })}
+                ListEmptyComponent={
+                    <View style={styles.emptyContainer}>
+                        <Ionicons name="chatbubble-outline" size={48} color={Colors.text.secondary.dark} />
+                        <Text style={styles.emptyText}>No messages yet</Text>
+                        <Text style={styles.emptySubtext}>Send a message to start the conversation</Text>
+                    </View>
+                }
             />
 
-            {/* INPUT BAR (ONLY THIS USES KeyboardAvoidingView) */}
+            {/* INPUT BAR */}
             <KeyboardAvoidingView
                 behavior="padding"
                 keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top + 60 : 0}
@@ -140,18 +344,35 @@ export default function ChatScreen() {
                             value={message}
                             onChangeText={setMessage}
                             multiline
+                            editable={!isSending}
                         />
 
                         <Ionicons name="attach" size={22} color={Colors.text.secondary.dark} />
                     </View>
 
-                    <TouchableOpacity style={styles.sendButton} onPress={handleSend}>
-                        <Ionicons
-                            name={message.trim() ? 'send' : 'mic'}
-                            size={20}
-                            color={Colors.surface.dark}
-                        />
-                    </TouchableOpacity>
+                    <Pressable
+                        style={({ pressed }) => [
+                            styles.sendButton,
+                            (isSending || !message.trim()) && styles.sendButtonDisabled,
+                            pressed && styles.sendButtonPressed
+                        ]}
+                        onPress={() => {
+                            console.log('[ChatScreen] Send button pressed!');
+                            handleSend();
+                        }}
+                        disabled={isSending || !message.trim()}
+                        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                    >
+                        {isSending ? (
+                            <ActivityIndicator size="small" color={Colors.surface.dark} />
+                        ) : (
+                            <Ionicons
+                                name={message.trim() ? 'send' : 'mic'}
+                                size={20}
+                                color={Colors.surface.dark}
+                            />
+                        )}
+                    </Pressable>
                 </View>
             </KeyboardAvoidingView>
         </View>
@@ -164,6 +385,17 @@ const styles = StyleSheet.create({
     container: {
         flex: 1,
         backgroundColor: Colors.background.dark,
+    },
+
+    loadingContainer: {
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+
+    loadingText: {
+        marginTop: 12,
+        color: Colors.text.secondary.dark,
+        fontSize: 14,
     },
 
     header: {
@@ -219,6 +451,27 @@ const styles = StyleSheet.create({
     messagesList: {
         paddingHorizontal: Sizes.spacing.md,
         paddingVertical: 16,
+        flexGrow: 1,
+    },
+
+    emptyContainer: {
+        flex: 1,
+        justifyContent: 'center',
+        alignItems: 'center',
+        paddingVertical: 100,
+    },
+
+    emptyText: {
+        marginTop: 12,
+        fontSize: 16,
+        color: Colors.text.primary.dark,
+        fontWeight: '600',
+    },
+
+    emptySubtext: {
+        marginTop: 4,
+        fontSize: 14,
+        color: Colors.text.secondary.dark,
     },
 
     messageContainer: {
@@ -302,5 +555,14 @@ const styles = StyleSheet.create({
         backgroundColor: Colors.background.light,
         justifyContent: 'center',
         alignItems: 'center',
+    },
+
+    sendButtonDisabled: {
+        opacity: 0.6,
+    },
+
+    sendButtonPressed: {
+        opacity: 0.8,
+        transform: [{ scale: 0.95 }],
     },
 });
