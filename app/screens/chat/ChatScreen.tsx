@@ -4,6 +4,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
     ActivityIndicator,
+    Alert,
     FlatList,
     KeyboardAvoidingView,
     Platform,
@@ -12,7 +13,7 @@ import {
     Text,
     TextInput,
     TouchableOpacity,
-    View,
+    View
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors } from '../../../constants/Colors';
@@ -162,12 +163,14 @@ export default function ChatScreen() {
                 console.log('[ChatScreen] Chat created:', newChatId);
             } catch (error) {
                 console.error('[ChatScreen] Error creating chat:', error);
+                Alert.alert('Error', 'Failed to start chat. Check connection.');
                 return;
             }
         }
 
         if (!activeChatId) {
             console.error('[ChatScreen] No chat ID available');
+            Alert.alert('Error', 'Chat initialization failed.');
             return;
         }
 
@@ -204,8 +207,10 @@ export default function ChatScreen() {
                         : msg
                 )
             );
-        } catch (error) {
+        } catch (error: any) {
             console.error('[ChatScreen] Error sending message:', error);
+            Alert.alert('Send Failed', error.message || 'Could not send message. Please try again.');
+
             // Mark as failed
             setMessages(prev =>
                 prev.map(msg =>
