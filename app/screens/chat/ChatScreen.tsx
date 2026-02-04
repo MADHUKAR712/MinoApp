@@ -7,7 +7,6 @@ import {
     FlatList,
     KeyboardAvoidingView,
     Platform,
-    Pressable,
     StatusBar,
     StyleSheet,
     Text,
@@ -350,17 +349,11 @@ export default function ChatScreen() {
                         <Ionicons name="attach" size={22} color={Colors.text.secondary.dark} />
                     </View>
 
-                    <Pressable
-                        style={({ pressed }) => [
-                            styles.sendButton,
-                            (isSending || !message.trim()) && styles.sendButtonDisabled,
-                            pressed && styles.sendButtonPressed
-                        ]}
-                        onPress={() => {
-                            console.log('[ChatScreen] Send button pressed!');
-                            handleSend();
-                        }}
+                    <TouchableOpacity
+                        style={[styles.sendButton, isSending && styles.sendButtonDisabled]}
+                        onPress={handleSend}
                         disabled={isSending || !message.trim()}
+                        activeOpacity={0.7}
                         hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                     >
                         {isSending ? (
@@ -372,7 +365,7 @@ export default function ChatScreen() {
                                 color={Colors.surface.dark}
                             />
                         )}
-                    </Pressable>
+                    </TouchableOpacity>
                 </View>
             </KeyboardAvoidingView>
         </View>
@@ -559,10 +552,5 @@ const styles = StyleSheet.create({
 
     sendButtonDisabled: {
         opacity: 0.6,
-    },
-
-    sendButtonPressed: {
-        opacity: 0.8,
-        transform: [{ scale: 0.95 }],
     },
 });
